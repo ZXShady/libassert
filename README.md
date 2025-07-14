@@ -1,7 +1,6 @@
 # libassert <!-- omit in toc -->
 
-[![build](https://github.com/jeremy-rifkin/libassert/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/jeremy-rifkin/libassert/actions/workflows/build.yml)
-[![tests](https://github.com/jeremy-rifkin/libassert/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/jeremy-rifkin/libassert/actions/workflows/tests.yml)
+[![ci](https://github.com/jeremy-rifkin/libassert/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jeremy-rifkin/libassert/actions/workflows/ci.yml)
 [![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=jeremy-rifkin_libassert&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=jeremy-rifkin_libassert)
 <br/>
 [![Community Discord Link](https://img.shields.io/badge/Chat%20on%20the%20(very%20small)-Community%20Discord-blue?labelColor=2C3239&color=7289DA&style=flat&logo=discord&logoColor=959DA5)](https://discord.gg/frjaAZvqUZ)
@@ -13,6 +12,7 @@
 <p align="center">The most over-engineered C++ assertion library</p>
 
 ## Table of Contents: <!-- omit in toc -->
+
 - [30-Second Overview](#30-second-overview)
   - [CMake FetchContent Usage](#cmake-fetchcontent-usage)
 - [Philosophy](#philosophy)
@@ -23,6 +23,7 @@
 - [Methodology](#methodology)
 - [Considerations](#considerations)
 - [In-Depth Library Documentation](#in-depth-library-documentation)
+  - [Library headers](#library-headers)
   - [Assertion Macros](#assertion-macros)
     - [Parameters](#parameters)
     - [Return value](#return-value)
@@ -39,6 +40,7 @@
 - [Integration with Test Libraries](#integration-with-test-libraries)
   - [Catch2](#catch2)
   - [GoogleTest](#googletest)
+- [ABI Versioning](#abi-versioning)
 - [Usage](#usage)
   - [CMake FetchContent](#cmake-fetchcontent)
   - [System-Wide Installation](#system-wide-installation)
@@ -47,6 +49,7 @@
   - [Package Managers](#package-managers)
     - [Conan](#conan)
     - [Vcpkg](#vcpkg)
+  - [C++20 Modules](#c20-Modules)
 - [Platform Logistics](#platform-logistics)
 - [Replacing \<cassert\>](#replacing-cassert)
 - [FAQ](#faq)
@@ -117,7 +120,7 @@ include(FetchContent)
 FetchContent_Declare(
   libassert
   GIT_REPOSITORY https://github.com/jeremy-rifkin/libassert.git
-  GIT_TAG        v2.1.5 # <HASH or TAG>
+  GIT_TAG        v2.2.0 # <HASH or TAG>
 )
 FetchContent_MakeAvailable(libassert)
 target_link_libraries(your_target libassert::assert)
@@ -161,10 +164,12 @@ indispensable in development.
 # Features
 
 ## Automatic Expression Decomposition <!-- omit in toc -->
+
 The most important feature this library supports is automatic expression decomposition. No need for `ASSERT_LT` or other
 such hassle, `assert(vec.size() > 10);` is automatically understood, as showcased above.
 
 ## Expression Diagnostics <!-- omit in toc -->
+
 Values involved in assert expressions are displayed. Redundant diagnostics like `2 => 2` are avoided.
 
 ```cpp
@@ -233,7 +238,7 @@ A lot of care is given to producing debug stringifications of values as effectiv
 numbers, should all be printed as you'd expect. Additionally containers, tuples, std::optional, smart pointers, etc. are
 all stringified to show as much information as possible. If a user defined type overloads `operator<<(std::ostream& o,
 const S& s)`, that overload will be called. Otherwise it a default message will be printed. Additionally, a
-stringification customiztaion point is provided:
+stringification customization point is provided:
 
 ```cpp
 template<> struct libassert::stringifier<MyObject> {
@@ -318,12 +323,13 @@ course, if the result is unused and produces no side effects it will be optimize
 
 # Considerations
 
-**Performance:** As far as runtime performance goes, the impact at callsites is very minimal under `-Og` or higher. The fast-path in the
-code (i.e., where the assertion does not fail), will be fast. A lot of work is required to process assertion failures
-once they happen. However, since failures should be rare, this should not matter.
+**Performance:** As far as runtime performance goes, the impact at callsites is very minimal when optimizations are on.
+The happy-path in the code (i.e., where the assertion does not fail) will be fast. The failure path may be relatively
+slow, but, assertion failures are rare and performance in such a situation is the least of a program's problems.
 
-**Compile speeds:**, there is a compile-time cost associated with all the template instantiations required for this library's
-magic.
+**Compile speeds:** There is some compile-time cost associated with the library's machinery, however, it tends to not
+make a huge difference in compile speeds. If enum stringification with magic enum is enabled that can slow down builds a
+lot.
 
 **Other:**
 
@@ -374,6 +380,13 @@ The operation between left and right hand sides of the top-level operation in th
 function object.
 
 Note: Boolean logical operators (`&&` and `||`) are not decomposed by default due to short circuiting.
+
+Note: Because of limitations with C macros, expressions with template arguments will need to be templatized. E.g.
+`ASSERT(foo<a, b>() == c)` needs to be written as `ASSERT((foo<a, b>()) == c)`.
+
+Note: Because libassert's expression decomposition system involves binding to references there can be problems when
+asserting comparisons involving bit fields. A simple workaround is to rewrite an assertion like `ASSERT(s.bit == 1)` as
+`ASSERT(+s.bit == 1)`, `ASSERT(s.bit * 1 == 1)`, or similar.
 
 #### `assertion message` <!-- omit in toc -->
 
@@ -812,7 +825,8 @@ gcc 10 and the library can surpress that warning for gcc 12. <!-- https://godbol
 
 **Defines:**
 
-- `LIBASSERT_USE_MAGIC_ENUM`: Use magic enum for stringifying enum values
+- `LIBASSERT_USE_MAGIC_ENUM`: Use [magic enum](https://github.com/Neargye/magic_enum) for stringifying enum values
+- `LIBASSERT_USE_ENCHANTUM`: Use [enchantum](https://github.com/ZXShady/enchantum) for stringifying enum values
 - `LIBASSERT_DECOMPOSE_BINARY_LOGICAL`: Decompose `&&` and `||`
 - `LIBASSERT_SAFE_COMPARISONS`: Enable safe signed-unsigned comparisons for decomposed expressions
 - `LIBASSERT_PREFIX_ASSERTIONS`: Prefixes all assertion macros with `LIBASSERT_`
@@ -820,8 +834,12 @@ gcc 10 and the library can surpress that warning for gcc 12. <!-- https://godbol
 - `LIBASSERT_NO_STRINGIFY_SMART_POINTER_OBJECTS`: Disables stringification of smart pointer contents
 
 **CMake:**
-- `LIBASSERT_USE_EXTERNAL_CPPTRACE`: Use an externam cpptrace instead of aquiring the library with FetchContent
-- `LIBASSERT_USE_EXTERNAL_MAGIC_ENUM`: Use an externam magic enum instead of aquiring the library with FetchContent
+- `LIBASSERT_USE_EXTERNAL_CPPTRACE`: Use an external [cpptrace](https://github.com/jeremy-rifkin/cpptrace) instead of
+  acquiring the library with FetchContent
+- `LIBASSERT_USE_EXTERNAL_MAGIC_ENUM`: Use an external [magic enum](https://github.com/Neargye/magic_enum) instead of
+  acquiring the library with FetchContent
+- `LIBASSERT_USE_EXTERNAL_ENCHANTUM`: Use an external [enchantum](https://github.com/ZXShady/enchantum) instead of
+  acquiring the library with FetchContent
 
 ## Library Version
 
@@ -869,6 +887,13 @@ Currently libassert provides `ASSERT` and `EXPECT` macros for gtest.
 
 This isn't as pretty as I would like, however, it gets the job done.
 
+# ABI Versioning
+
+Since libassert v2.2.0, the library uses an inline ABI versioning namespace and all symbols part of the public interface
+are secretly under the namespace `libassert::v1`. This is done to allow for potential future library evolution in an
+ABI-friendly manner. The namespace version is independent of the library major versions, and ABI changes are expected to
+be extremely rare.
+
 # Usage
 
 This library targets >=C++17 and supports all major compilers and all major platforms (linux, macos, windows, and
@@ -886,7 +911,7 @@ include(FetchContent)
 FetchContent_Declare(
   libassert
   GIT_REPOSITORY https://github.com/jeremy-rifkin/libassert.git
-  GIT_TAG        v2.1.5 # <HASH or TAG>
+  GIT_TAG        v2.2.0 # <HASH or TAG>
 )
 FetchContent_MakeAvailable(libassert)
 target_link_libraries(your_target libassert::assert)
@@ -901,7 +926,7 @@ information.
 
 ```sh
 git clone https://github.com/jeremy-rifkin/libassert.git
-git checkout v2.1.5
+git checkout v2.2.0
 mkdir libassert/build
 cd libassert/build
 cmake .. -DCMAKE_BUILD_TYPE=Release
@@ -937,7 +962,7 @@ you when installing new libraries.
 
 ```ps1
 git clone https://github.com/jeremy-rifkin/libassert.git
-git checkout v2.1.5
+git checkout v2.2.0
 mkdir libassert/build
 cd libassert/build
 cmake .. -DCMAKE_BUILD_TYPE=Release
@@ -955,7 +980,7 @@ To install just for the local user (or any custom prefix):
 
 ```sh
 git clone https://github.com/jeremy-rifkin/libassert.git
-git checkout v2.1.5
+git checkout v2.2.0
 mkdir libassert/build
 cd libassert/build
 cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=$HOME/wherever
@@ -1004,7 +1029,7 @@ Libassert is available through conan at https://conan.io/center/recipes/libasser
 
 ```
 [requires]
-libassert/2.1.5
+libassert/2.2.0
 [generators]
 CMakeDeps
 CMakeToolchain
@@ -1027,6 +1052,16 @@ vcpkg install libassert
 find_package(libassert CONFIG REQUIRED)
 target_link_libraries(YOUR_TARGET PRIVATE libassert::assert)
 ```
+
+## C++20 Modules
+
+Libassert supports C++20 modules: `import libassert;`. You'll need a modern toolchain in order to use C++20 modules (i.e.
+relatively new compilers, cmake, etc).
+
+You will also have to `#include` headers with the macro definitions:
+- `<libassert/assert-macros.hpp>`: All the library assertion macros
+- `<libassert/assert-gtest-macros.hpp>`: Macros for gtest integration
+- `<libassert/assert-catch2-macros.hpp>`: Macros for catch2 integration
 
 # Platform Logistics
 

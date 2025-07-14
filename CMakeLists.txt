@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.15...4.0)
 
 include(cmake/PreventInSourceBuilds.cmake)
 
@@ -12,7 +12,7 @@ set(package_name "libassert")
 # create base project
 project(
   libassert
-  VERSION 2.1.5
+  VERSION 2.2.0
   DESCRIPTION "The most over-engineered C++ assertion library"
   HOMEPAGE_URL "https://github.com/jeremy-rifkin/libassert"
   LANGUAGES CXX
@@ -44,14 +44,45 @@ if(PROJECT_IS_TOP_LEVEL)
   endif()
 endif()
 
+set(HAS_CXX20_MODULES FALSE)
+if(NOT LIBASSERT_DISABLE_CXX_20_MODULES)
+  if(CMAKE_CXX_STANDARD GREATER_EQUAL 20)
+    # https://cmake.org/cmake/help/latest/manual/cmake-cxxmodules.7.html#compiler-support
+    # msvc 14.34+/19.34+
+    # clang 16+
+    # gcc 15 and newer
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+      if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 19.34)
+        set(HAS_CXX20_MODULES TRUE)
+      endif()
+    elseif (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+      if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 16.0)
+        set(HAS_CXX20_MODULES TRUE)
+      endif()
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 15.0)
+        set(HAS_CXX20_MODULES TRUE)
+      endif()
+    endif()
+  endif()
+  if(HAS_CXX20_MODULES)
+    message(STATUS "Libassert HAS_CXX20_MODULES: Yes")
+  else()
+    message(STATUS "Libassert HAS_CXX20_MODULES: No")
+  endif()
+endif()
+
 
 # ---- Project Dependencies ----
 
 set(LIBASSERT_MAGIC_ENUM_REPO "https://github.com/Neargye/magic_enum.git")
 set(LIBASSERT_MAGIC_ENUM_TAG "e046b69a3736d314fad813e159b1c192eaef92cd") # v0.9.7
 
+set(LIBASSERT_ENCHANTUM_REPO "https://github.com/ZXShady/enchantum.git")
+set(LIBASSERT_ENCHANTUM_TAG "c460fbf0fcfe01eb49cd8e5790f05ced7e2a6bb6") # 0.3.0
+
 set(LIBASSERT_CPPTRACE_REPO "https://github.com/jeremy-rifkin/cpptrace.git")
-set(LIBASSERT_CPPTRACE_TAG "c37b5ed7364f4fc1c58e92d13399cd04656e6572") # v0.8.2
+set(LIBASSERT_CPPTRACE_TAG "de1780287e0938c8b33a6dbc7fbdfb39da07f5bb") # 1.0.1
 
 # obtain cpptrace
 if(LIBASSERT_USE_EXTERNAL_CPPTRACE)
@@ -105,15 +136,30 @@ target_sources(
   src/tokenizer.cpp
 )
 
+if(HAS_CXX20_MODULES)
+  target_sources(
+    ${target_name} PUBLIC
+    FILE_SET CXX_MODULES
+    FILES "src/libassert.cppm"
+    BASE_DIRS "src"
+  )
+endif()
+
 # link dependencies
 target_link_libraries(
   ${target_name} PUBLIC
   cpptrace::cpptrace
 )
 
+if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" AND "${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}" STREQUAL "MSVC")
+  set(IS_CLANG_CL 1)
+else()
+  set(IS_CLANG_CL 0)
+endif()
+
 set(
   warning_options
-  $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Werror=return-type -Wundef>
+  $<$<NOT:$<OR:$<CXX_COMPILER_ID:MSVC>,$<STREQUAL:${IS_CLANG_CL},1>>>:-Wall -Wextra -Werror=return-type -Wundef>
   $<$<CXX_COMPILER_ID:GNU>:-Wuseless-cast -Wmaybe-uninitialized>
   $<$<CXX_COMPILER_ID:MSVC>:/W4 /permissive->
 )
@@ -183,11 +229,15 @@ if(LIBASSERT_SANITIZER_BUILD)
 endif()
 
 if(
-  LIBASSERT_BUILD_TESTING AND NOT (
-    "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND "${CMAKE_CXX_COMPILER_VERSION}" VERSION_LESS 9.0
-  )
+  LIBASSERT_BUILD_TESTING
+  AND NOT ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND "${CMAKE_CXX_COMPILER_VERSION}" VERSION_LESS 9.0)
+  AND NOT LIBASSERT_USE_ENCHANTUM
 )
   set(LIBASSERT_USE_MAGIC_ENUM ON)
+endif()
+
+if(LIBASSERT_USE_MAGIC_ENUM AND LIBASSERT_USE_ENCHANTUM)
+    message(FATAL_ERROR "You cannot use both magic_enum and enchantum at once!")
 endif()
 
 if(LIBASSERT_USE_MAGIC_ENUM)
@@ -209,6 +259,26 @@ if(LIBASSERT_USE_MAGIC_ENUM)
   )
 endif()
 
+if(NOT LIBASSERT_STD_FORMAT)
+  target_compile_definitions(${target_name} PUBLIC LIBASSERT_NO_STD_FORMAT)
+endif()
+
+if(LIBASSERT_USE_ENCHANTUM)
+  if(LIBASSERT_USE_EXTERNAL_ENCHANTUM)
+    find_package(enchantum REQUIRED)
+  else()
+    include(FetchContent)
+    FetchContent_Declare(enchantum
+      GIT_REPOSITORY "${LIBASSERT_ENCHANTUM_REPO}"
+      GIT_TAG        "${LIBASSERT_ENCHANTUM_TAG}")
+    FetchContent_MakeAvailable(enchantum)
+  endif()
+  target_link_libraries(${target_name} PUBLIC enchantum::enchantum)
+  target_compile_definitions(
+    ${target_name} PUBLIC
+    LIBASSERT_USE_ENCHANTUM
+  )
+endif()
 
 # ---- Install Rules ----
 
