@@ -4,9 +4,7 @@
 // Copyright (c) 2021-2025 Jeremy Rifkin under the MIT license
 // https://github.com/jeremy-rifkin/libassert
 
-#include <version>
-
-#define LIBASSERT_ABI_NAMESPACE_TAG v1
+#define LIBASSERT_ABI_NAMESPACE_TAG abiv2
 
 #define LIBASSERT_BEGIN_NAMESPACE \
     namespace libassert { \
@@ -159,66 +157,21 @@
 /// C++20 functionality wrappers.
 ///
 
-// Check if we can use std::is_constant_evaluated.
 #ifdef __has_include
  #if __has_include(<version>)
   #include <version>
-  #ifdef __cpp_lib_is_constant_evaluated
-   #include <type_traits>
-   #define LIBASSERT_HAS_IS_CONSTANT_EVALUATED
+  #if !defined(LIBASSERT_NO_STD_FORMAT) && __has_include(<format>) && defined(__cpp_lib_format)
+   #define LIBASSERT_USE_STD_FORMAT
   #endif
  #endif
 #endif
 
-// Check if we have the builtin __builtin_is_constant_evaluated.
-#ifdef __has_builtin
- #if __has_builtin(__builtin_is_constant_evaluated)
-  #define LIBASSERT_HAS_BUILTIN_IS_CONSTANT_EVALUATED
- #endif
-#endif
-
-// GCC 9.1+ and later has __builtin_is_constant_evaluated
-#if defined(__GNUC__) && __GNUC__ >= 9 && !defined(LIBASSERT_HAS_BUILTIN_IS_CONSTANT_EVALUATED)
- #define LIBASSERT_HAS_BUILTIN_IS_CONSTANT_EVALUATED
-#endif
-
-// Visual Studio 2019 (19.25) and later supports __builtin_is_constant_evaluated
-#if defined(_MSC_FULL_VER) && _MSC_FULL_VER >= 192528326
- #define LIBASSERT_HAS_BUILTIN_IS_CONSTANT_EVALUATED
-#endif
-
-LIBASSERT_BEGIN_NAMESPACE
-namespace detail {
-    // Note: Works with >=C++20 and with C++17 for GCC 9.1+, Clang 9+, and MSVC 19.25+.
-    constexpr bool is_constant_evaluated() noexcept {
-        #if defined(LIBASSERT_HAS_IS_CONSTANT_EVALUATED)
-         return std::is_constant_evaluated();
-        #elif defined(LIBASSERT_HAS_BUILTIN_IS_CONSTANT_EVALUATED)
-         return __builtin_is_constant_evaluated();
-        #else
-         return false;
-        #endif
-    }
-}
-LIBASSERT_END_NAMESPACE
-
 #if LIBASSERT_IS_CLANG || LIBASSERT_IS_GCC
- #if LIBASSERT_IS_GCC
-  #define LIBASSERT_WARNING_PRAGMA_PUSH_GCC _Pragma("GCC diagnostic push")
-  #define LIBASSERT_WARNING_PRAGMA_POP_GCC _Pragma("GCC diagnostic pop")
-  #define LIBASSERT_WARNING_PRAGMA_PUSH_CLANG
-  #define LIBASSERT_WARNING_PRAGMA_POP_CLANG
- #else
-  #define LIBASSERT_WARNING_PRAGMA_PUSH_GCC
-  #define LIBASSERT_WARNING_PRAGMA_POP_GCC
-  #define LIBASSERT_WARNING_PRAGMA_PUSH_CLANG _Pragma("GCC diagnostic push")
-  #define LIBASSERT_WARNING_PRAGMA_POP_CLANG _Pragma("GCC diagnostic pop")
- #endif
-#else
- #define LIBASSERT_WARNING_PRAGMA_PUSH_CLANG
- #define LIBASSERT_WARNING_PRAGMA_POP_CLANG
- #define LIBASSERT_WARNING_PRAGMA_PUSH_GCC
- #define LIBASSERT_WARNING_PRAGMA_POP_GCC
+  #define LIBASSERT_WARNING_PRAGMA_PUSH _Pragma("GCC diagnostic push")
+  #define LIBASSERT_WARNING_PRAGMA_POP _Pragma("GCC diagnostic pop")
+#elif LIBASSERT_IS_MSVC
+  #define LIBASSERT_WARNING_PRAGMA_PUSH _Pragma("warning(push)")
+  #define LIBASSERT_WARNING_PRAGMA_POP _Pragma("warning(pop)")
 #endif
 
 #if LIBASSERT_IS_CLANG || LIBASSERT_IS_ICX
@@ -235,11 +188,11 @@ LIBASSERT_END_NAMESPACE
  #endif
  #define LIBASSERT_ASM_BREAKPOINT(instruction) \
   do { \
-   LIBASSERT_WARNING_PRAGMA_PUSH_GCC \
+   LIBASSERT_WARNING_PRAGMA_PUSH \
    LIBASSERT_IGNORE_CPP20_EXTENSION_WARNING \
    __asm__ __volatile__(instruction) \
    ; \
-   LIBASSERT_WARNING_PRAGMA_POP_GCC \
+   LIBASSERT_WARNING_PRAGMA_POP \
   } while(0)
  // precedence for these come from llvm's __builtin_debugtrap() implementation
  // arm: https://github.com/llvm/llvm-project/blob/e9954ec087d640809082f46d1c7e5ac1767b798d/llvm/lib/Target/ARM/ARMInstrInfo.td#L2393-L2394
@@ -273,10 +226,6 @@ LIBASSERT_END_NAMESPACE
 #else
  // some compiler we aren't prepared for
  #define LIBASSERT_BREAKPOINT()
-#endif
-
-#if !defined(LIBASSERT_NO_STD_FORMAT) && defined(__has_include) && __has_include(<format>) && defined(__cpp_lib_format)
- #define LIBASSERT_USE_STD_FORMAT
 #endif
 
 #endif

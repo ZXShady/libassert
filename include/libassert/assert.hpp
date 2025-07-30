@@ -44,20 +44,20 @@ LIBASSERT_BEGIN_NAMESPACE
     [[nodiscard]] LIBASSERT_EXPORT int terminal_width(int fd);
 
     // Enable virtual terminal processing on windows terminals
-    LIBASSERT_ATTR_COLD LIBASSERT_EXPORT void enable_virtual_terminal_processing_if_needed();
+    LIBASSERT_EXPORT void enable_virtual_terminal_processing_if_needed();
 
     inline constexpr int stdin_fileno = 0;
     inline constexpr int stdout_fileno = 1;
     inline constexpr int stderr_fileno = 2;
 
-    LIBASSERT_ATTR_COLD LIBASSERT_EXPORT bool isatty(int fd);
+    LIBASSERT_EXPORT bool isatty(int fd);
 
-    LIBASSERT_ATTR_COLD LIBASSERT_EXPORT bool is_debugger_present() noexcept;
+    LIBASSERT_EXPORT bool is_debugger_present() noexcept;
     enum class debugger_check_mode {
         check_once,
         check_every_time,
     };
-    LIBASSERT_ATTR_COLD LIBASSERT_EXPORT void set_debugger_check_mode(debugger_check_mode mode) noexcept;
+    LIBASSERT_EXPORT void set_debugger_check_mode(debugger_check_mode mode) noexcept;
 
     // returns the type name of T
     template<typename T>
@@ -92,6 +92,9 @@ LIBASSERT_BEGIN_NAMESPACE
         std::string_view identifier;
         std::string_view accent;
         std::string_view unknown;
+        std::string_view highlight_delete;
+        std::string_view highlight_insert;
+        std::string_view highlight_replace;
         std::string_view reset;
         LIBASSERT_EXPORT const static color_scheme ansi_basic;
         LIBASSERT_EXPORT const static color_scheme ansi_rgb;
@@ -100,6 +103,8 @@ LIBASSERT_BEGIN_NAMESPACE
 
     LIBASSERT_EXPORT void set_color_scheme(const color_scheme&);
     LIBASSERT_EXPORT const color_scheme& get_color_scheme();
+
+    LIBASSERT_EXPORT void set_diff_highlighting(bool);
 
     // set separator used for diagnostics, by default it is "=>"
     // note: not thread-safe
@@ -111,10 +116,6 @@ LIBASSERT_BEGIN_NAMESPACE
     [[nodiscard]] std::string highlight_stringify(const T& t, const color_scheme& scheme = get_color_scheme()) {
         return highlight(stringify(t), scheme);
     }
-
-    // generates a stack trace, formats to the given width
-    [[nodiscard]] LIBASSERT_ATTR_NOINLINE LIBASSERT_EXPORT
-    std::string stacktrace(int width = 0, const color_scheme& scheme = get_color_scheme(), std::size_t skip = 0);
 
     enum class literal_format : unsigned {
         // integers and floats are decimal by default, chars are of course chars, and everything else only has one
@@ -157,6 +158,20 @@ LIBASSERT_BEGIN_NAMESPACE
         basename,
     };
     LIBASSERT_EXPORT void set_path_mode(path_mode mode);
+    LIBASSERT_EXPORT path_mode get_path_mode();
+
+    // generates a stack trace, formats to the given width
+    [[nodiscard]] LIBASSERT_ATTR_NOINLINE LIBASSERT_EXPORT
+    std::string stacktrace(int width = 0, const color_scheme& scheme = get_color_scheme(), std::size_t skip = 0);
+
+    // formats a stacktrace
+    [[nodiscard]] LIBASSERT_EXPORT
+    std::string print_stacktrace(
+        const cpptrace::stacktrace& trace,
+        int width = 0,
+        const color_scheme& scheme = get_color_scheme(),
+        path_mode = get_path_mode()
+    );
 
     enum class assert_type {
         debug_assertion,
@@ -456,51 +471,27 @@ LIBASSERT_END_NAMESPACE
         LIBASSERT_PRIMITIVE_PANIC("PANIC/UNREACHABLE failure handler returned");
     }
 
-    // TODO: Re-evaluate benefit of this at all in non-cold path code
-    template<typename A, typename B, typename C, typename... Args>
-    [[nodiscard]] LIBASSERT_ATTR_COLD LIBASSERT_ATTR_NOINLINE
-    expression_decomposer<A, B, C> process_assert_fail_m(
-        expression_decomposer<A, B, C> decomposer,
-        const assert_static_parameters* params,
-        Args&&... args
-    ) {
-        process_assert_fail(decomposer, params, std::forward<Args>(args)...);
-        return decomposer;
-    }
-
-    template<typename A, typename B, typename C, typename... Args>
-    LIBASSERT_ATTR_COLD LIBASSERT_ATTR_NOINLINE
-    void process_assert_fail_n(
-        expression_decomposer<A, B, C> decomposer,
-        const assert_static_parameters* params,
-        Args&&... args
-    ) {
-        process_assert_fail(decomposer, params, std::forward<Args>(args)...);
-    }
-
     template<typename T>
     struct assert_value_wrapper {
         T value;
     };
 
     template<
-        bool R, bool ret_lhs, bool value_is_lval_ref,
+        bool ret_lhs, bool value_is_lval_ref,
         typename T, typename A, typename B, typename C
     >
     constexpr auto get_expression_return_value(T& value, expression_decomposer<A, B, C>& decomposer) {
-        if constexpr(R) {
-            if constexpr(ret_lhs) {
-                if constexpr(std::is_lvalue_reference_v<A>) {
-                    return assert_value_wrapper<A>{decomposer.take_lhs()};
-                } else {
-                    return assert_value_wrapper<A>{std::move(decomposer.take_lhs())};
-                }
+        if constexpr(ret_lhs) {
+            if constexpr(std::is_lvalue_reference_v<A>) {
+                return assert_value_wrapper<A>{decomposer.take_lhs()};
             } else {
-                if constexpr(value_is_lval_ref) {
-                    return assert_value_wrapper<T&>{value};
-                } else {
-                    return assert_value_wrapper<T>{std::move(value)};
-                }
+                return assert_value_wrapper<A>{std::move(decomposer.take_lhs())};
+            }
+        } else {
+            if constexpr(value_is_lval_ref) {
+                return assert_value_wrapper<T&>{value};
+            } else {
+                return assert_value_wrapper<T>{std::move(value)};
             }
         }
     }

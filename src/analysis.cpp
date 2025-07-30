@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cctype>
+#include <cmath>
 #include <initializer_list>
 #include <iterator>
 #include <memory>
@@ -29,7 +30,6 @@ namespace detail {
      * C++ syntax analysis logic
      */
 
-    LIBASSERT_ATTR_COLD
     std::string union_regexes(std::initializer_list<std::string_view> regexes) {
         std::string composite;
         for(const std::string_view str : regexes) {
@@ -41,7 +41,6 @@ namespace detail {
         return composite;
     }
 
-    LIBASSERT_ATTR_COLD
     std::string prettify_type(std::string type) {
         // > > -> >> replacement
         // could put in analysis:: but the replacement is basic and this is more convenient for
@@ -50,8 +49,8 @@ namespace detail {
         // "," -> ", " and " ," -> ", "
         static const std::regex comma_re(R"(\s*,\s*)");
         replace_all(type, comma_re, ", ");
-        // class C -> C for msvc
-        static const std::regex class_re(R"(\b(class|struct)\s+)");
+        // class/struct/enum C -> C for msvc
+        static const std::regex class_re(R"(\b(class|struct|enum)\s+)");
         replace_all(type, class_re, "");
         // `anonymous namespace' -> (anonymous namespace) for msvc
         // this brings it in-line with other compilers and prevents any tokenization/highlighting issues
@@ -129,7 +128,6 @@ namespace detail {
         std::vector<std::pair<std::regex, literal_format>> literal_formats;
 
     private:
-        LIBASSERT_ATTR_COLD
         analysis() {
             // https://eel.is/c++draft/gram.lex
             // generate regular expressions
@@ -247,7 +245,6 @@ namespace detail {
         }
 
     public:
-        LIBASSERT_ATTR_COLD
         std::string_view normalize_op(const std::string_view op) {
             // Operators need to be normalized to support alternative operators like and and bitand
             // Normalization instead of just adding to the precedence table because target operators
@@ -259,7 +256,6 @@ namespace detail {
             }
         }
 
-        LIBASSERT_ATTR_COLD
         std::string_view normalize_brace(const std::string_view brace) {
             // Operators need to be normalized to support alternative operators like and and bitand
             // Normalization instead of just adding to the precedence table because target operators
@@ -271,7 +267,6 @@ namespace detail {
             }
         }
 
-        LIBASSERT_ATTR_COLD
         std::vector<highlight_block> highlight_string(std::string_view str, const color_scheme& scheme) const {
             std::vector<highlight_block> output;
             std::cmatch match;
@@ -293,7 +288,6 @@ namespace detail {
             return output;
         }
 
-        LIBASSERT_ATTR_COLD
         // TODO: Refactor
         // NOLINTNEXTLINE(readability-function-cognitive-complexity)
         std::vector<highlight_block> highlight(std::string_view expression, const color_scheme& scheme) try {
@@ -362,7 +356,6 @@ namespace detail {
             return {{"", std::string(expression)}};
         }
 
-        LIBASSERT_ATTR_COLD
         literal_format get_literal_format(std::string_view expression) {
             for(auto& [ re, type ] : literal_formats) {
                 if(std::regex_match(expression.begin(), expression.end(), re)) {
@@ -372,7 +365,6 @@ namespace detail {
             return literal_format::default_format; // not a literal // TODO
         }
 
-        LIBASSERT_ATTR_COLD
         static token_t find_last_non_ws(const std::vector<token_t>& tokens, size_t i) {
             // returns empty token_e::whitespace on failure
             while(i--) {
@@ -383,7 +375,6 @@ namespace detail {
             return {token_e::whitespace, ""};
         }
 
-        LIBASSERT_ATTR_COLD
         static std::string_view get_real_op(const std::vector<token_t>& tokens, const size_t i) {
             // re-coalesce >> if necessary
             const bool is_shr = tokens[i].str == ">" && i < tokens.size() - 1 && tokens[i + 1].str == ">";
@@ -398,7 +389,7 @@ namespace detail {
         static constexpr int max_depth = 10;
         // TODO
         // NOLINTNEXTLINE(readability-function-cognitive-complexity)
-        LIBASSERT_ATTR_COLD bool pseudoparse(
+        bool pseudoparse(
             const std::vector<token_t>& tokens,
             const std::string_view target_op,
             size_t i,
@@ -560,7 +551,6 @@ namespace detail {
             return true;
         }
 
-        LIBASSERT_ATTR_COLD
         std::pair<std::string, std::string> decompose_expression(
             std::string_view expression,
             std::string_view target_op
@@ -652,43 +642,163 @@ namespace detail {
     std::unique_ptr<analysis> analysis::analysis_singleton;
     std::mutex analysis::singleton_mutex;
 
-    LIBASSERT_ATTR_COLD
     std::string highlight(std::string_view expression, const color_scheme& scheme) {
         if(scheme == libassert::color_scheme::blank) {
             return std::string(expression);
         } else {
             auto blocks = analysis::get().highlight(expression, scheme);
-            std::string str;
-            for(auto& block : blocks) {
-                str += block.color;
-                str += block.content;
-                if(!block.color.empty()) {
-                    str += scheme.reset;
-                }
-            }
-            return str;
+            return combine_blocks(blocks, scheme);
         }
     }
 
-    LIBASSERT_ATTR_COLD
+    std::string combine_blocks(const std::vector<highlight_block>& blocks, const color_scheme& scheme) {
+        std::string str;
+        for(auto& block : blocks) {
+            str += block.color;
+            str += block.content;
+            if(!block.color.empty()) {
+                str += scheme.reset;
+            }
+        }
+        return str;
+    }
+
+    std::size_t length(const std::vector<highlight_block>& blocks) {
+        std::size_t length = 0;
+        for(auto& block : blocks) {
+            length += block.content.size();
+        }
+        return length;
+    }
+
+    constexpr double diff_max_distance = 0.2;
+    constexpr double diff_min_limit = 5;
+
+    struct formatted_character {
+        std::string_view format;
+        char c;
+    };
+
+    std::vector<formatted_character> to_chars(std::vector<highlight_block> blocks) {
+        std::vector<formatted_character> chars;
+        for(auto& block : blocks) {
+            for(char c : block.content) {
+                chars.push_back({block.color, c});
+            }
+        }
+        return chars;
+    }
+
+    struct operation {
+        enum class type { Keep, Insert, Delete, Replace };
+        type action;
+        formatted_character ch;
+    };
+
+    struct diff_result {
+        std::vector<operation> operations;
+        int distance;
+    };
+
+    // Levenshtein diff
+    diff_result diff(const std::vector<formatted_character>& a, const std::vector<formatted_character>& b) {
+        std::size_t m = a.size();
+        std::size_t n = b.size();
+        std::vector<std::vector<int>> dp(m + 1, std::vector<int>(n + 1, 0));
+        // Levenshtein main-body
+        for(std::size_t i = 0; i <= m; i++) {
+            dp[i][0] = static_cast<int>(i);
+        }
+        for(std::size_t j = 0; j <= n; j++) {
+            dp[0][j] = static_cast<int>(j);
+        }
+        for(std::size_t i = 1; i <= m; i++) {
+            for(std::size_t j = 1; j <= n; j++) {
+                int cost = a[i - 1].c == b[j - 1].c ? 0 : 1;
+                dp[i][j] = std::min({
+                    dp[i - 1][j] + 1,       // delete
+                    dp[i][j - 1] + 1,       // insert
+                    dp[i - 1][j - 1] + cost // replace / keep
+                });
+            }
+        }
+        // Trace edits
+        std::vector<operation> ops;
+        std::size_t i = m;
+        std::size_t j = n;
+        while(i > 0 || j > 0) {
+            if(i > 0 && dp[i][j] == dp[i - 1][j] + 1) {
+                ops.push_back({ operation::type::Delete, a[i - 1] });
+                i--;
+            } else if(j > 0 && dp[i][j] == dp[i][j - 1] + 1) {
+                ops.push_back({ operation::type::Insert, b[j - 1] });
+                j--;
+            } else {
+                operation::type k = a[i - 1].c == b[j - 1].c ? operation::type::Keep : operation::type::Replace;
+                formatted_character c = k == operation::type::Keep ? a[i - 1] : b[j - 1];
+                ops.push_back({ k, c });
+                i--;
+                j--;
+            }
+        }
+        std::reverse(ops.begin(), ops.end());
+        return {ops, dp[m][n]};
+    }
+
+    bool should_show_diff(std::size_t a, std::size_t b, std::size_t distance) {
+        const auto max_len = std::max(a, b);
+        const auto limit = std::max(diff_min_limit, max_len * diff_max_distance);
+        return distance <= std::ceil(limit);
+    }
+
+    std::optional<std::vector<highlight_block>> diff(
+        std::vector<highlight_block> a,
+        std::vector<highlight_block> b,
+        const color_scheme& scheme
+    ) {
+        auto&& [ops, distance] = diff(to_chars(a), to_chars(b));
+        if(!should_show_diff(length(a), length(b), distance)) {
+            return std::nullopt;
+        }
+        std::vector<highlight_block> out;
+        for(const operation& op : ops) {
+            switch(op.action) {
+            case operation::type::Keep:
+                out.push_back({op.ch.format, std::string{op.ch.c}});
+                break;
+            case operation::type::Delete:
+                // pass, don't print deleted chars since they'll be on the other side
+                break;
+            case operation::type::Insert:
+                out.push_back({op.ch.format, scheme.highlight_insert, std::string{op.ch.c}});
+                break;
+            case operation::type::Replace:
+                out.push_back({op.ch.format, scheme.highlight_replace, std::string{op.ch.c}});
+                break;
+            default:
+                LIBASSERT_PRIMITIVE_PANIC("Unhandled diff operation");
+            }
+        }
+        return out;
+    }
+
     std::vector<highlight_block> highlight_blocks(std::string_view expression, const color_scheme& scheme) {
         // TODO: Maybe check scheme == libassert::color_scheme::blank here? Have to consult ramifications.
         return analysis::get().highlight(expression, scheme);
     }
 
-    LIBASSERT_ATTR_COLD literal_format get_literal_format(std::string_view expression) {
+    literal_format get_literal_format(std::string_view expression) {
         return analysis::get().get_literal_format(expression);
     }
 
-    LIBASSERT_ATTR_COLD std::string_view trim_suffix(std::string_view expression) {
+    std::string_view trim_suffix(std::string_view expression) {
         return expression.substr(0, expression.find_last_not_of("FfUuLlZz") + 1);
     }
 
-    LIBASSERT_ATTR_COLD bool is_bitwise(std::string_view op) {
+    bool is_bitwise(std::string_view op) {
         return analysis::get().bitwise_operators.count(op);
     }
 
-    LIBASSERT_ATTR_COLD
     std::pair<std::string, std::string> decompose_expression(
         std::string_view expression,
         std::string_view target_op

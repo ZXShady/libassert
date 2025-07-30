@@ -20,10 +20,12 @@ LIBASSERT_BEGIN_NAMESPACE
     export using libassert::color_scheme;
     export using libassert::set_color_scheme;
     export using libassert::get_color_scheme;
+    export using libassert::set_diff_highlighting;
     export using libassert::set_separator;
     export using libassert::highlight;
     export using libassert::highlight_stringify;
     export using libassert::stacktrace;
+    export using libassert::print_stacktrace;
     export using libassert::literal_format;
     export using libassert::operator|;
     export using libassert::literal_format_mode;
@@ -31,6 +33,7 @@ LIBASSERT_BEGIN_NAMESPACE
     export using libassert::set_fixed_literal_format;
     export using libassert::path_mode;
     export using libassert::set_path_mode;
+    export using libassert::get_path_mode;
     export using libassert::assert_type;
     export using libassert::default_failure_handler;
     export using libassert::handler_ptr;
@@ -44,8 +47,6 @@ LIBASSERT_BEGIN_NAMESPACE
         export using libassert::detail::assert_static_parameters;
         export using libassert::detail::pretty_function_name_wrapper;
         export using libassert::detail::process_assert_fail;
-        export using libassert::detail::process_assert_fail_n;
-        export using libassert::detail::process_assert_fail_m;
         export using libassert::detail::process_panic;
         export using libassert::detail::get_expression_return_value;
     }

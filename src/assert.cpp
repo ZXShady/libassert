@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -60,7 +61,6 @@ namespace detail {
 
     constexpr std::string_view libassert_detail_prefix = "libassert::" STR(LIBASSERT_ABI_NAMESPACE_TAG) "::detail::";
 
-    LIBASSERT_ATTR_COLD
     auto get_trace_window(const cpptrace::stacktrace& trace) {
         // Two boundaries: assert_detail and main
         // Both are found here, nothing is filtered currently at stack trace generation
@@ -82,7 +82,7 @@ namespace detail {
         std::string printed;
     };
 
-    LIBASSERT_ATTR_COLD [[nodiscard]]
+    [[nodiscard]]
     // TODO
     // NOLINTNEXTLINE(readability-function-cognitive-complexity)
     std::string print_stacktrace(
@@ -189,53 +189,12 @@ namespace detail {
         return stacktrace;
     }
 
-    LIBASSERT_ATTR_COLD
-    static std::string print_values(const std::vector<std::string>& vec, size_t lw, const color_scheme& scheme) {
-        LIBASSERT_PRIMITIVE_DEBUG_ASSERT(!vec.empty());
-        std::string values;
-        if(vec.size() == 1) {
-            values += microfmt::format("{}\n", indent(detail::highlight(vec[0], scheme), 8 + lw + 4, ' ', true));
-        } else {
-            // spacing here done carefully to achieve <expr> =  <a>  <b>  <c>, or similar
-            // no indentation done here for multiple value printing
-            values += " ";
-            for(const auto& str : vec) {
-                values += microfmt::format("{}", detail::highlight(str, scheme));
-                if(&str != &*--vec.end()) {
-                    values += "  ";
-                }
-            }
-            values += "\n";
-        }
-        return values;
-    }
-
-    LIBASSERT_ATTR_COLD
-    static std::vector<highlight_block> get_values(const std::vector<std::string>& vec, const color_scheme& scheme) {
-        LIBASSERT_PRIMITIVE_DEBUG_ASSERT(!vec.empty());
-        if(vec.size() == 1) {
-            return highlight_blocks(vec[0], scheme);
-        } else {
-            std::vector<highlight_block> blocks;
-            // spacing here done carefully to achieve <expr> =  <a>  <b>  <c>, or similar
-            // no indentation done here for multiple value printing
-            blocks.push_back({"", " "});
-            for(const auto& str : vec) {
-                auto h = highlight_blocks(str, scheme);
-                blocks.insert(blocks.end(), h.begin(), h.end());
-                if(&str != &*--vec.end()) {
-                    blocks.push_back({"", "  "});
-                }
-            }
-            return blocks;
-        }
-    }
-
     constexpr int min_term_width = 50;
     constexpr size_t where_indent = 8;
     std::string arrow = "=>";
+    std::atomic_bool do_diff_highlighting = false;
 
-    LIBASSERT_ATTR_COLD [[nodiscard]]
+    [[nodiscard]]
     std::string print_binary_diagnostics(
         const binary_diagnostics_descriptor& diagnostics,
         size_t term_width,
@@ -248,29 +207,12 @@ namespace detail {
             right_stringification,
             multiple_formats
         ] = diagnostics;
-        // TODO: Temporary hack while reworking
-        std::vector<std::string> lstrings = { left_stringification };
-        std::vector<std::string> rstrings = { right_stringification };
-        LIBASSERT_PRIMITIVE_DEBUG_ASSERT(!lstrings.empty());
-        LIBASSERT_PRIMITIVE_DEBUG_ASSERT(!rstrings.empty());
-        // pad all columns where there is overlap
-        // TODO: Use column printer instead of manual padding.
-        for(size_t i = 0; i < std::min(lstrings.size(), rstrings.size()); i++) {
-            // find which clause, left or right, we're padding (entry i)
-            std::vector<std::string>& which = lstrings[i].length() < rstrings[i].length() ? lstrings : rstrings;
-            const int difference = std::abs((int)lstrings[i].length() - (int)rstrings[i].length());
-            if(i != which.size() - 1) { // last column excluded as padding is not necessary at the end of the line
-                which[i].insert(which[i].end(), difference, ' ');
-            }
-        }
         // determine whether we actually gain anything from printing a where clause (e.g. exclude "1 => 1")
         const struct { bool left, right; } has_useful_where_clause = {
             multiple_formats
-                || lstrings.size() > 1
-                || (left_expression != lstrings[0] && trim_suffix(left_expression) != lstrings[0]),
+                || (left_expression != left_stringification && trim_suffix(left_expression) != left_stringification),
             multiple_formats
-                || rstrings.size() > 1
-                || (right_expression != rstrings[0] && trim_suffix(right_expression) != rstrings[0])
+                || (right_expression != right_stringification && trim_suffix(right_expression) != right_stringification)
         };
         // print where clause
         std::string where;
@@ -286,15 +228,23 @@ namespace detail {
             where += "    Where:\n";
             auto print_clause = [term_width, lw, &where, &scheme](
                 std::string_view expr_str,
-                const std::vector<std::string>& expr_strs
+                std::string_view stringification,
+                std::optional<std::string_view> diff_against
             ) {
+                auto highlighted = highlight_blocks(stringification, scheme);
+                if(do_diff_highlighting && diff_against) {
+                    // TODO: Redundant highlight
+                    if(auto res = diff(highlight_blocks(*diff_against, scheme), highlighted, scheme)) {
+                        highlighted = *std::move(res);
+                    }
+                }
                 if(term_width >= min_term_width) {
                     where += wrapped_print(
                         {
                             { where_indent - 1, {{"", ""}} }, // 8 space indent, wrapper will add a space
                             { lw, highlight_blocks(expr_str, scheme) },
                             { arrow.size(), {{"", arrow}} },
-                            { term_width - lw - 8 /* indent */ - 4 /* arrow */, get_values(expr_strs, scheme) }
+                            { term_width - lw - 8 /* indent */ - 4 /* arrow */, highlighted }
                         },
                         scheme
                     );
@@ -306,20 +256,27 @@ namespace detail {
                         "",
                         arrow
                     );
-                    where += print_values(expr_strs, lw, scheme);
+                    where += microfmt::format(
+                        "{}\n",
+                        indent(detail::combine_blocks(highlighted, scheme), 8 + lw + 4, ' ', true)
+                    );
                 }
             };
-            if(has_useful_where_clause.left) {
-                print_clause(left_expression, lstrings);
+            auto left =
+                has_useful_where_clause.left ? std::optional<std::string_view>(left_stringification) : std::nullopt;
+            auto right =
+                has_useful_where_clause.right ? std::optional<std::string_view>(right_stringification) : std::nullopt;
+            if(left) {
+                print_clause(left_expression, *left, right);
             }
-            if(has_useful_where_clause.right) {
-                print_clause(right_expression, rstrings);
+            if(right) {
+                print_clause(right_expression, *right, left);
             }
         }
         return where;
     }
 
-    LIBASSERT_ATTR_COLD [[nodiscard]]
+    [[nodiscard]]
     std::string print_extra_diagnostics(
         const std::vector<extra_diagnostic>& extra_diagnostics,
         size_t term_width,
@@ -372,10 +329,13 @@ LIBASSERT_BEGIN_NAMESPACE
         "",
         BASIC_PURPL, /* operator */
         BASIC_BLUE, /* call_identifier */
-        BASIC_YELLOW, /* scope_resolution_identifier */
+        BASIC_BLUE, /* scope_resolution_identifier */
         BASIC_BLUE, /* identifier */
         BASIC_BLUE, /* accent */
         BASIC_RED, /* unknown */
+        BASIC_HIGHLIGHT_RED, /* highlight delete */
+        BASIC_HIGHLIGHT_GREEN, /* highlight insert */
+        BASIC_HIGHLIGHT_YELLOW, /* highlight replace */
         RESET
     };
 
@@ -392,6 +352,9 @@ LIBASSERT_BEGIN_NAMESPACE
         RGB_BLUE, /* identifier */
         RGB_BLUE, /* accent */
         RGB_RED, /* unknown */
+        BASIC_HIGHLIGHT_RED, /* highlight delete */
+        BASIC_HIGHLIGHT_GREEN, /* highlight insert */
+        BASIC_HIGHLIGHT_YELLOW, /* highlight replace */
         RESET
     };
 
@@ -410,6 +373,10 @@ LIBASSERT_BEGIN_NAMESPACE
         return current_color_scheme;
     }
 
+    void set_diff_highlighting(bool dff) {
+        detail::do_diff_highlighting = dff;
+    }
+
     LIBASSERT_EXPORT void set_separator(std::string_view separator) {
         detail::arrow = separator;
     }
@@ -424,10 +391,12 @@ LIBASSERT_BEGIN_NAMESPACE
         current_path_mode = mode;
     }
 
+    path_mode get_path_mode() {
+        return current_path_mode;
+    }
+
     namespace detail {
-        LIBASSERT_ATTR_COLD
-        std::unique_ptr<detail::path_handler> new_path_handler() {
-            auto mode = current_path_mode.load();
+        std::unique_ptr<detail::path_handler> new_path_handler(path_mode mode = get_path_mode()) {
             switch(mode) {
                 case path_mode::disambiguated:
                     return std::make_unique<disambiguating_path_handler>();
@@ -438,10 +407,9 @@ LIBASSERT_BEGIN_NAMESPACE
                     return std::make_unique<identity_path_handler>();
             }
         }
-
     }
 
-    [[noreturn]] LIBASSERT_ATTR_COLD LIBASSERT_EXPORT
+    [[noreturn]] LIBASSERT_EXPORT
     void default_failure_handler(const assertion_info& info) {
         enable_virtual_terminal_processing_if_needed(); // for terminal colors on windows
         std::string message = info.to_string(
@@ -472,24 +440,24 @@ LIBASSERT_BEGIN_NAMESPACE
         }
     }
 
-    LIBASSERT_ATTR_COLD LIBASSERT_EXPORT
+    LIBASSERT_EXPORT
     handler_ptr get_failure_handler() {
         return detail::get_failure_handler();
     }
 
-    LIBASSERT_ATTR_COLD LIBASSERT_EXPORT
+    LIBASSERT_EXPORT
     void set_failure_handler(handler_ptr handler) {
         detail::get_failure_handler() = handler;
     }
 
     namespace detail {
-        LIBASSERT_ATTR_COLD LIBASSERT_EXPORT void fail(const assertion_info& info) {
+        LIBASSERT_EXPORT void fail(const assertion_info& info) {
             detail::get_failure_handler().load()(info);
         }
     }
 
-    LIBASSERT_ATTR_COLD binary_diagnostics_descriptor::binary_diagnostics_descriptor() = default;
-    LIBASSERT_ATTR_COLD binary_diagnostics_descriptor::binary_diagnostics_descriptor(
+    binary_diagnostics_descriptor::binary_diagnostics_descriptor() = default;
+    binary_diagnostics_descriptor::binary_diagnostics_descriptor(
         std::string_view _left_expression,
         std::string_view _right_expression,
         std::string&& _left_stringification,
@@ -501,12 +469,11 @@ LIBASSERT_BEGIN_NAMESPACE
         left_stringification(std::move(_left_stringification)),
         right_stringification(std::move(_right_stringification)),
         multiple_formats(_multiple_formats) {}
-    LIBASSERT_ATTR_COLD binary_diagnostics_descriptor::~binary_diagnostics_descriptor() = default;
-    LIBASSERT_ATTR_COLD
+    binary_diagnostics_descriptor::~binary_diagnostics_descriptor() = default;
     binary_diagnostics_descriptor::binary_diagnostics_descriptor(const binary_diagnostics_descriptor&) = default;
     binary_diagnostics_descriptor::binary_diagnostics_descriptor(binary_diagnostics_descriptor&&) noexcept = default;
     binary_diagnostics_descriptor& binary_diagnostics_descriptor::operator=(const binary_diagnostics_descriptor&) = default;
-    LIBASSERT_ATTR_COLD binary_diagnostics_descriptor&
+    binary_diagnostics_descriptor&
     binary_diagnostics_descriptor::operator=(binary_diagnostics_descriptor&&) noexcept(LIBASSERT_GCC_ISNT_STUPID) = default;
 LIBASSERT_END_NAMESPACE
 
@@ -517,7 +484,7 @@ LIBASSERT_BEGIN_NAMESPACE
 
             trace_holder(cpptrace::raw_trace raw_trace) : trace(raw_trace) {};
 
-            LIBASSERT_ATTR_COLD const cpptrace::raw_trace& get_raw_trace() const {
+            const cpptrace::raw_trace& get_raw_trace() const {
                 try {
                     return std::get<cpptrace::raw_trace>(trace);
                 } catch(std::bad_variant_access&) {
@@ -525,7 +492,7 @@ LIBASSERT_BEGIN_NAMESPACE
                 }
             }
 
-            LIBASSERT_ATTR_COLD const cpptrace::stacktrace& get_stacktrace() {
+            const cpptrace::stacktrace& get_stacktrace() {
                 if(std::holds_alternative<cpptrace::raw_trace>(trace)) {
                     // do resolution
                     auto raw_trace = std::move(std::get<cpptrace::raw_trace>(trace));
@@ -572,7 +539,7 @@ LIBASSERT_BEGIN_NAMESPACE
 
     using namespace detail;
 
-    LIBASSERT_ATTR_COLD LIBASSERT_ATTR_NOINLINE assertion_info::assertion_info(
+    LIBASSERT_ATTR_NOINLINE assertion_info::assertion_info(
         const assert_static_parameters* static_params,
         std::unique_ptr<detail::trace_holder, detail::trace_holder_deleter> _trace,
         size_t _n_args
@@ -586,7 +553,7 @@ LIBASSERT_BEGIN_NAMESPACE
         n_args(_n_args),
         trace(_trace.release()) {}
 
-    LIBASSERT_ATTR_COLD assertion_info::~assertion_info() = default;
+    assertion_info::~assertion_info() = default;
     assertion_info::assertion_info(const assertion_info& other) :
         macro_name(other.macro_name),
         type(other.type),
@@ -635,7 +602,7 @@ LIBASSERT_BEGIN_NAMESPACE
         return path_handler.get();
     }
 
-    LIBASSERT_ATTR_COLD std::string_view assertion_info::action() const {
+    std::string_view assertion_info::action() const {
         switch(type) {
             case assert_type::debug_assertion: return "Debug Assertion failed";
             case assert_type::assertion:       return "Assertion failed";
@@ -647,12 +614,12 @@ LIBASSERT_BEGIN_NAMESPACE
         }
     }
 
-    LIBASSERT_ATTR_COLD const cpptrace::raw_trace& assertion_info::get_raw_trace() const {
+    const cpptrace::raw_trace& assertion_info::get_raw_trace() const {
         LIBASSERT_PRIMITIVE_ASSERT(trace != nullptr);
         return trace->get_raw_trace();
     }
 
-    LIBASSERT_ATTR_COLD const cpptrace::stacktrace& assertion_info::get_stacktrace() const {
+    const cpptrace::stacktrace& assertion_info::get_stacktrace() const {
         LIBASSERT_PRIMITIVE_ASSERT(trace != nullptr);
         return trace->get_stacktrace();
     }
@@ -726,7 +693,7 @@ LIBASSERT_BEGIN_NAMESPACE
         return libassert::detail::print_stacktrace(get_stacktrace(), width, scheme, get_path_handler());
     }
 
-    LIBASSERT_ATTR_COLD std::string assertion_info::to_string(int width, const color_scheme& scheme) const {
+    std::string assertion_info::to_string(int width, const color_scheme& scheme) const {
         // auto& stacktrace = get_stacktrace(); // TODO
         // now do output
         std::string output;
@@ -743,10 +710,28 @@ LIBASSERT_BEGIN_NAMESPACE
 LIBASSERT_END_NAMESPACE
 
 LIBASSERT_BEGIN_NAMESPACE
-    [[nodiscard]] LIBASSERT_ATTR_COLD LIBASSERT_ATTR_NOINLINE
+    [[nodiscard]] LIBASSERT_ATTR_NOINLINE
     std::string stacktrace(int width, const color_scheme& scheme, std::size_t skip) {
         auto trace = cpptrace::generate_trace(skip + 1);
         detail::identity_path_handler handler;
         return print_stacktrace(trace, width, scheme, &handler);
+    }
+
+    [[nodiscard]]
+    std::string print_stacktrace(
+        const cpptrace::stacktrace& trace,
+        int width,
+        const color_scheme& scheme,
+        path_mode mode
+    ) {
+        auto path_handler = new_path_handler(mode);
+        // if this is a disambiguating handler or similar it needs to be fed all paths
+        if(path_handler->has_add_path()) {
+            for(const auto& frame : trace.frames) {
+                path_handler->add_path(frame.filename);
+            }
+            path_handler->finalize();
+        }
+        return print_stacktrace(trace, width, scheme, path_handler.get());
     }
 LIBASSERT_END_NAMESPACE

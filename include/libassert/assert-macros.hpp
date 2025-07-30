@@ -79,38 +79,19 @@
 #define LIBASSERT_STRINGIFY(x) #x,
 #define LIBASSERT_COMMA ,
 
-// Church boolean
-#define LIBASSERT_IF(b) LIBASSERT_IF_##b
-#define LIBASSERT_IF_true(t,...) t
-#define LIBASSERT_IF_false(t,f,...) f
-
 #if LIBASSERT_IS_CLANG || LIBASSERT_IS_GCC
  #if LIBASSERT_IS_GCC
-  #define LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA_GCC \
+  #define LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA \
      _Pragma("GCC diagnostic ignored \"-Wparentheses\"") \
      _Pragma("GCC diagnostic ignored \"-Wuseless-cast\"") // #49
-  #define LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA_CLANG
-  #define LIBASSERT_WARNING_PRAGMA_PUSH_GCC _Pragma("GCC diagnostic push")
-  #define LIBASSERT_WARNING_PRAGMA_POP_GCC _Pragma("GCC diagnostic pop")
-  #define LIBASSERT_WARNING_PRAGMA_PUSH_CLANG
-  #define LIBASSERT_WARNING_PRAGMA_POP_CLANG
  #else
-  #define LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA_CLANG \
+  #define LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA \
      _Pragma("GCC diagnostic ignored \"-Wparentheses\"") \
      _Pragma("GCC diagnostic ignored \"-Woverloaded-shift-op-parentheses\"")
-  #define LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA_GCC
-  #define LIBASSERT_WARNING_PRAGMA_PUSH_GCC
-  #define LIBASSERT_WARNING_PRAGMA_POP_GCC
-  #define LIBASSERT_WARNING_PRAGMA_PUSH_CLANG _Pragma("GCC diagnostic push")
-  #define LIBASSERT_WARNING_PRAGMA_POP_CLANG _Pragma("GCC diagnostic pop")
  #endif
 #else
- #define LIBASSERT_WARNING_PRAGMA_PUSH_CLANG
- #define LIBASSERT_WARNING_PRAGMA_POP_CLANG
- #define LIBASSERT_WARNING_PRAGMA_PUSH_GCC
- #define LIBASSERT_WARNING_PRAGMA_POP_GCC
- #define LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA_GCC
- #define LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA_CLANG
+ // NOTE: If this is changed, LIBASSERT_ASSERT_STMT_EXPR below will need to be updated for MSVC
+ #define LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA
 #endif
 
 LIBASSERT_BEGIN_NAMESPACE
@@ -182,11 +163,6 @@ LIBASSERT_END_NAMESPACE
  #define LIBASSERT_INVOKE_VAL_PRETTY_FUNCTION_ARG ,libassert::detail::pretty_function_name_wrapper{LIBASSERT_PFUNC}
 #endif
 #define LIBASSERT_PRETTY_FUNCTION_ARG ,libassert::detail::pretty_function_name_wrapper{LIBASSERT_PFUNC}
-#if LIBASSERT_IS_CLANG // -Wall in clang
- #define LIBASSERT_IGNORE_UNUSED_VALUE _Pragma("GCC diagnostic ignored \"-Wunused-value\"")
-#else
- #define LIBASSERT_IGNORE_UNUSED_VALUE
-#endif
 
 #define LIBASSERT_BREAKPOINT_IF_DEBUGGING() \
     do \
@@ -201,75 +177,76 @@ LIBASSERT_END_NAMESPACE
  #define LIBASSERT_BREAKPOINT_IF_DEBUGGING_ON_FAIL()
 #endif
 
+// ifndef here to allow a library like rsl-test to use this as a customization point for fancy instrumentation
+#ifndef LIBASSERT_ASSERT_MAIN_BODY
+ #define LIBASSERT_ASSERT_MAIN_BODY(expr, name, type, failaction, decomposer_name, condition_value, pretty_function_arg, ...) \
+     if(LIBASSERT_STRONG_EXPECT(!(condition_value), 0)) { \
+         libassert::ERROR_ASSERTION_FAILURE_IN_CONSTEXPR_CONTEXT(); \
+         LIBASSERT_BREAKPOINT_IF_DEBUGGING_ON_FAIL(); \
+         failaction \
+         LIBASSERT_STATIC_DATA(name, libassert::assert_type::type, #expr, __VA_ARGS__) \
+         libassert::detail::process_assert_fail( \
+             decomposer_name, \
+             libassert_params \
+             LIBASSERT_VA_ARGS(__VA_ARGS__) pretty_function_arg \
+         ); \
+     }
+#endif
+#ifndef LIBASSERT_PANIC_MAIN_BODY
+ #define LIBASSERT_PANIC_MAIN_BODY(name, type, pretty_function_arg, ...) \
+     libassert::ERROR_ASSERTION_FAILURE_IN_CONSTEXPR_CONTEXT(); \
+     LIBASSERT_BREAKPOINT_IF_DEBUGGING_ON_FAIL(); \
+     LIBASSERT_STATIC_DATA(name, libassert::assert_type::type, "", __VA_ARGS__) \
+     libassert::detail::process_panic( \
+         libassert_params \
+         LIBASSERT_VA_ARGS(__VA_ARGS__) pretty_function_arg \
+     );
+#endif
+
 #define LIBASSERT_INVOKE(expr, name, type, failaction, ...) \
-    /* must push/pop out here due to nasty clang bug https://github.com/llvm/llvm-project/issues/63897 */ \
-    /* must do awful stuff to workaround differences in where gcc and clang allow these directives to go */ \
     do { \
-        LIBASSERT_WARNING_PRAGMA_PUSH_CLANG \
-        LIBASSERT_IGNORE_UNUSED_VALUE \
-        LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA_CLANG \
-        LIBASSERT_WARNING_PRAGMA_PUSH_GCC \
-        LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA_GCC \
+        LIBASSERT_WARNING_PRAGMA_PUSH \
+        LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA \
         auto libassert_decomposer = libassert::detail::expression_decomposer( \
             libassert::detail::expression_decomposer{} << expr \
         ); \
-        LIBASSERT_WARNING_PRAGMA_POP_GCC \
-        if(LIBASSERT_STRONG_EXPECT(!static_cast<bool>(libassert_decomposer.get_value()), 0)) { \
-            libassert::ERROR_ASSERTION_FAILURE_IN_CONSTEXPR_CONTEXT(); \
-            LIBASSERT_BREAKPOINT_IF_DEBUGGING_ON_FAIL(); \
-            failaction \
-            LIBASSERT_STATIC_DATA(name, libassert::assert_type::type, #expr, __VA_ARGS__) \
-            if constexpr(sizeof libassert_decomposer > 32) { \
-                libassert::detail::process_assert_fail( \
-                    libassert_decomposer, \
-                    libassert_params \
-                    LIBASSERT_VA_ARGS(__VA_ARGS__) LIBASSERT_PRETTY_FUNCTION_ARG \
-                ); \
-            } else { \
-                /* std::move it to assert_fail_m, will be moved back to r */ \
-                libassert::detail::process_assert_fail_n( \
-                    std::move(libassert_decomposer), \
-                    libassert_params \
-                    LIBASSERT_VA_ARGS(__VA_ARGS__) LIBASSERT_PRETTY_FUNCTION_ARG \
-                ); \
-            } \
-        } \
-        LIBASSERT_WARNING_PRAGMA_POP_CLANG \
+        LIBASSERT_WARNING_PRAGMA_POP \
+        LIBASSERT_ASSERT_MAIN_BODY( \
+            expr, \
+            name, \
+            type, \
+            failaction, \
+            libassert_decomposer, \
+            static_cast<bool>(libassert_decomposer.get_value()), \
+            LIBASSERT_PRETTY_FUNCTION_ARG, \
+            __VA_ARGS__ \
+        ) \
     } while(0) \
 
 #define LIBASSERT_INVOKE_PANIC(name, type, ...) \
     do { \
-        libassert::ERROR_ASSERTION_FAILURE_IN_CONSTEXPR_CONTEXT(); \
-        LIBASSERT_BREAKPOINT_IF_DEBUGGING_ON_FAIL(); \
-        LIBASSERT_STATIC_DATA(name, libassert::assert_type::type, "", __VA_ARGS__) \
-        libassert::detail::process_panic( \
-            libassert_params \
-            LIBASSERT_VA_ARGS(__VA_ARGS__) LIBASSERT_PRETTY_FUNCTION_ARG \
-        ); \
-    } while(0) \
+        LIBASSERT_PANIC_MAIN_BODY( \
+            name, \
+            type, \
+            LIBASSERT_PRETTY_FUNCTION_ARG, \
+            __VA_ARGS__ \
+        ) \
+    } while(0)
 
-// Workaround for gcc bug 105734 / libassert bug #24
-#define LIBASSERT_DESTROY_DECOMPOSER libassert_decomposer.~expression_decomposer() /* NOLINT(bugprone-use-after-move,clang-analyzer-cplusplus.Move) */
-#if LIBASSERT_IS_GCC
- #if __GNUC__ == 12 && __GNUC_MINOR__ == 1
-  LIBASSERT_BEGIN_NAMESPACE
-  namespace detail {
-      template<typename T> constexpr void destroy(T& t) {
-          t.~T();
-      }
-  }
-  LIBASSERT_END_NAMESPACE
-  #undef LIBASSERT_DESTROY_DECOMPOSER
-  #define LIBASSERT_DESTROY_DECOMPOSER libassert::detail::destroy(libassert_decomposer)
- #endif
-#endif
 #if LIBASSERT_IS_CLANG || LIBASSERT_IS_GCC
  // Extra set of parentheses here because clang treats __extension__ as a low-precedence unary operator which interferes
  // with decltype(auto) in an expression like decltype(auto) x = __extension__ ({...}).y;
- #define LIBASSERT_STMTEXPR(B, R) (__extension__ ({ B R }))
+ // Surpress warnings here because of a clang bug: https://github.com/llvm/llvm-project/issues/63897
+ #define LIBASSERT_ASSERT_STMT_EXPR(B, R) (__extension__ ({ \
+        LIBASSERT_WARNING_PRAGMA_PUSH \
+        LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA \
+        B \
+        LIBASSERT_WARNING_PRAGMA_POP \
+        R \
+    }))
  #define LIBASSERT_STATIC_CAST_TO_BOOL(x) static_cast<bool>(x)
 #else
- #define LIBASSERT_STMTEXPR(B, R) [&](const char* libassert_msvc_pfunc) { B return R }(LIBASSERT_PFUNC)
+ #define LIBASSERT_ASSERT_STMT_EXPR(B, R) [&](const char* libassert_msvc_pfunc) { B return R }(LIBASSERT_PFUNC)
  // Workaround for msvc bug
  #define LIBASSERT_STATIC_CAST_TO_BOOL(x) libassert::detail::static_cast_to_bool(x)
  LIBASSERT_BEGIN_NAMESPACE
@@ -280,77 +257,54 @@ LIBASSERT_END_NAMESPACE
  }
  LIBASSERT_END_NAMESPACE
 #endif
-#define LIBASSERT_INVOKE_VAL(expr, doreturn, check_expression, name, type, failaction, ...) \
-    /* must push/pop out here due to nasty clang bug https://github.com/llvm/llvm-project/issues/63897 */ \
-    /* must do awful stuff to workaround differences in where gcc and clang allow these directives to go */ \
-    LIBASSERT_WARNING_PRAGMA_PUSH_CLANG \
-    LIBASSERT_IGNORE_UNUSED_VALUE \
-    LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA_CLANG \
-    LIBASSERT_STMTEXPR( \
-        LIBASSERT_WARNING_PRAGMA_PUSH_GCC \
-        LIBASSERT_EXPRESSION_DECOMP_WARNING_PRAGMA_GCC \
+
+#define LIBASSERT_INVOKE_VAL(expr, check_expression, name, type, failaction, ...) \
+    LIBASSERT_ASSERT_STMT_EXPR( \
         auto libassert_decomposer = libassert::detail::expression_decomposer( \
             libassert::detail::expression_decomposer{} << expr \
         ); \
-        LIBASSERT_WARNING_PRAGMA_POP_GCC \
         decltype(auto) libassert_value = libassert_decomposer.get_value(); \
         constexpr bool libassert_ret_lhs = libassert_decomposer.ret_lhs(); \
         if constexpr(check_expression) { \
-            /* For *some* godforsaken reason static_cast<bool> causes an ICE in MSVC here. Something very specific */ \
-            /* about casting a decltype(auto) value inside a lambda. Workaround is to put it in a wrapper. */ \
-            /* https://godbolt.org/z/Kq8Wb6q5j https://godbolt.org/z/nMnqnsMYx */ \
-            if(LIBASSERT_STRONG_EXPECT(!LIBASSERT_STATIC_CAST_TO_BOOL(libassert_value), 0)) { \
-                libassert::ERROR_ASSERTION_FAILURE_IN_CONSTEXPR_CONTEXT(); \
-                LIBASSERT_BREAKPOINT_IF_DEBUGGING_ON_FAIL(); \
-                failaction \
-                LIBASSERT_STATIC_DATA(name, libassert::assert_type::type, #expr, __VA_ARGS__) \
-                if constexpr(sizeof libassert_decomposer > 32) { \
-                    libassert::detail::process_assert_fail( \
-                        libassert_decomposer, \
-                        libassert_params \
-                        LIBASSERT_VA_ARGS(__VA_ARGS__) LIBASSERT_INVOKE_VAL_PRETTY_FUNCTION_ARG \
-                    ); \
-                } else { \
-                    /* std::move it to assert_fail_m, will be moved back to r */ \
-                    auto libassert_r = libassert::detail::process_assert_fail_m( \
-                        std::move(libassert_decomposer), \
-                        libassert_params \
-                        LIBASSERT_VA_ARGS(__VA_ARGS__) LIBASSERT_INVOKE_VAL_PRETTY_FUNCTION_ARG \
-                    ); \
-                    /* can't move-assign back to decomposer if it holds reference members */ \
-                    LIBASSERT_DESTROY_DECOMPOSER; \
-                    new (&libassert_decomposer) libassert::detail::expression_decomposer(std::move(libassert_r)); \
-                } \
-            } \
+            LIBASSERT_ASSERT_MAIN_BODY( \
+                expr, \
+                name, \
+                type, \
+                failaction, \
+                libassert_decomposer, \
+                /* For *some* godforsaken reason static_cast<bool> causes an ICE in MSVC here. Something very */ \
+                /* specific about casting a decltype(auto) value inside a lambda. Workaround is to put it in a */ \
+                /* wrapper. https://godbolt.org/z/Kq8Wb6q5j https://godbolt.org/z/nMnqnsMYx */ \
+                LIBASSERT_STATIC_CAST_TO_BOOL(libassert_value), \
+                LIBASSERT_INVOKE_VAL_PRETTY_FUNCTION_ARG, \
+                __VA_ARGS__ \
+            ) \
         }, \
-        /* Note: std::launder needed in 17 in case of placement new / move shenanigans above */ \
-        /* https://timsong-cpp.github.io/cppwp/n4659/basic.life#8.3 */ \
-        /* Note: Somewhat relying on this call being inlined so inefficiency is eliminated */ \
+        /* Note: Relying on this call being inlined so inefficiency is eliminated */ \
         libassert::detail::get_expression_return_value< \
-            doreturn LIBASSERT_COMMA \
             libassert_ret_lhs LIBASSERT_COMMA \
             std::is_lvalue_reference_v<decltype(libassert_value)> \
-        >(libassert_value, *std::launder(&libassert_decomposer)); \
-    ) LIBASSERT_IF(doreturn)(.value,) \
-    LIBASSERT_WARNING_PRAGMA_POP_CLANG
+        >(libassert_value, libassert_decomposer); \
+    ).value
 
 #ifdef NDEBUG
  #define LIBASSERT_ASSUME_ACTION LIBASSERT_UNREACHABLE_CALL();
 #else
  #define LIBASSERT_ASSUME_ACTION
 #endif
+#define LIBASSERT_NOP_ACTION
 
 // assertion macros
 
 // Debug assert
 #ifndef NDEBUG
- #define LIBASSERT_DEBUG_ASSERT(expr, ...) LIBASSERT_INVOKE(expr, "DEBUG_ASSERT", debug_assertion, , __VA_ARGS__)
+ #define LIBASSERT_DEBUG_ASSERT(expr, ...) LIBASSERT_INVOKE(expr, "DEBUG_ASSERT", debug_assertion, LIBASSERT_NOP_ACTION, __VA_ARGS__)
 #else
  #define LIBASSERT_DEBUG_ASSERT(expr, ...) (void)0
 #endif
 
 // Assert
-#define LIBASSERT_ASSERT(expr, ...) LIBASSERT_INVOKE(expr, "ASSERT", assertion, , __VA_ARGS__)
+#define LIBASSERT_ASSERT(expr, ...) LIBASSERT_INVOKE(expr, "ASSERT", assertion, LIBASSERT_NOP_ACTION, __VA_ARGS__)
 // lowercase version intentionally done outside of the include guard here
 
 // Assume
@@ -369,14 +323,14 @@ LIBASSERT_END_NAMESPACE
 // value variants
 
 #ifndef NDEBUG
- #define LIBASSERT_DEBUG_ASSERT_VAL(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, true, "DEBUG_ASSERT_VAL", debug_assertion, , __VA_ARGS__)
+ #define LIBASSERT_DEBUG_ASSERT_VAL(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, "DEBUG_ASSERT_VAL", debug_assertion, LIBASSERT_NOP_ACTION, __VA_ARGS__)
 #else
- #define LIBASSERT_DEBUG_ASSERT_VAL(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, false, "DEBUG_ASSERT_VAL", debug_assertion, , __VA_ARGS__)
+ #define LIBASSERT_DEBUG_ASSERT_VAL(expr, ...) LIBASSERT_INVOKE_VAL(expr, false, "DEBUG_ASSERT_VAL", debug_assertion, LIBASSERT_NOP_ACTION, __VA_ARGS__)
 #endif
 
-#define LIBASSERT_ASSUME_VAL(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, true, "ASSUME_VAL", assumption, LIBASSERT_ASSUME_ACTION, __VA_ARGS__)
+#define LIBASSERT_ASSUME_VAL(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, "ASSUME_VAL", assumption, LIBASSERT_ASSUME_ACTION, __VA_ARGS__)
 
-#define LIBASSERT_ASSERT_VAL(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, true, "ASSERT_VAL", assertion, , __VA_ARGS__)
+#define LIBASSERT_ASSERT_VAL(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, "ASSERT_VAL", assertion, LIBASSERT_NOP_ACTION, __VA_ARGS__)
 
 // non-prefixed versions
 
@@ -407,7 +361,7 @@ LIBASSERT_END_NAMESPACE
 
 #ifdef LIBASSERT_LOWERCASE
  #ifndef NDEBUG
-  #define debug_assert(expr, ...) LIBASSERT_INVOKE(expr, "debug_assert", debug_assertion, , __VA_ARGS__)
+  #define debug_assert(expr, ...) LIBASSERT_INVOKE(expr, "debug_assert", debug_assertion, LIBASSERT_NOP_ACTION, __VA_ARGS__)
  #else
   #define debug_assert(expr, ...) (void)0
  #endif
@@ -415,50 +369,14 @@ LIBASSERT_END_NAMESPACE
 
 #ifdef LIBASSERT_LOWERCASE
  #ifndef NDEBUG
-  #define debug_assert_val(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, true, "debug_assert_val", debug_assertion, , __VA_ARGS__)
+  #define debug_assert_val(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, "debug_assert_val", debug_assertion, LIBASSERT_NOP_ACTION, __VA_ARGS__)
  #else
-  #define debug_assert_val(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, false, "debug_assert_val", debug_assertion, , __VA_ARGS__)
+  #define debug_assert_val(expr, ...) LIBASSERT_INVOKE_VAL(expr, false, "debug_assert_val", debug_assertion, LIBASSERT_NOP_ACTION, __VA_ARGS__)
  #endif
 #endif
 
 #ifdef LIBASSERT_LOWERCASE
- #define assert_val(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, true, "assert_val", assertion, , __VA_ARGS__)
-#endif
-
-// Wrapper macro to allow support for C++26's user generated static_assert messages.
-// The backup message version also allows for the user to provide a backup version that will
-// be used if the compiler does not support user generated messages.
-// More info on user generated static_assert's
-// can be found here: https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2023/p2741r1.pdf
-//
-// Currently the functionality works as such. If we are in a C++26 environment, the user generated message will be used.
-// If we are not in a C++26 environment, then either the static_assert will be used without a message or the backup message.
-// TODO: Maybe give these a better name? Ideally one that is shorter and more descriptive?
-// TODO: Maybe add a helper to make passing user generated static_assert messages easier?
-#if defined(__cpp_static_assert) && __cpp_static_assert >= 202306L
- #ifdef LIBASSERT_LOWERCASE
-  #define libassert_user_static_assert(cond, constant) static_assert(cond, constant)
-  #define libassert_user_static_assert_backup_msg(cond, msg, constant) static_assert(cond, constant)
-  #define user_static_assert(cond, constant) static_assert(cond, constant)
-  #define user_static_assert_backup_msg(cond, msg, constant) static_assert(cond, constant)
- #else
-  #define LIBASSERT_USER_STATIC_ASSERT(cond, constant) static_assert(cond, constant)
-  #define LIBASSERT_USER_STATIC_ASSERT_BACKUP_MSG(cond, msg, constant) static_assert(cond, constant)
-  #define USER_STATIC_ASSERT(cond, constant) static_assert(cond, constant)
-  #define USER_STATIC_ASSERT_BACKUP_MSG(cond, msg, constant) static_assert(cond, constant)
- #endif
-#else
- #ifdef LIBASSERT_LOWERCASE
-  #define libassert_user_static_assert(cond, constant) static_assert(cond)
-  #define libassert_user_static_assert_backup_msg(cond, msg, constant) static_assert(cond, msg)
-  #define user_static_assert(cond, constant) static_assert(cond)
-  #define user_static_assert_backup_msg(cond, msg, constant) static_assert(cond, msg)
- #else
-  #define LIBASSERT_USER_STATIC_ASSERT(cond, constant) static_assert(cond)
-  #define LIBASSERT_USER_STATIC_ASSERT_BACKUP_MSG(cond, msg, constant) static_assert(cond, msg)
-  #define USER_STATIC_ASSERT(cond, constant) static_assert(cond)
-  #define USER_STATIC_ASSERT_BACKUP_MSG(cond, msg, constant) static_assert(cond, msg)
- #endif
+ #define assert_val(expr, ...) LIBASSERT_INVOKE_VAL(expr, true, "assert_val", assertion, LIBASSERT_NOP_ACTION, __VA_ARGS__)
 #endif
 
 #endif // LIBASSERT_HPP
@@ -470,8 +388,8 @@ LIBASSERT_END_NAMESPACE
   #undef assert
  #endif
  #ifndef NDEBUG
-  #define assert(expr, ...) LIBASSERT_INVOKE(expr, "assert", assertion, , __VA_ARGS__)
+  #define assert(expr, ...) LIBASSERT_INVOKE(expr, "assert", assertion, LIBASSERT_NOP_ACTION, __VA_ARGS__)
  #else
-  #define assert(expr, ...) LIBASSERT_INVOKE(expr, "assert", assertion, , __VA_ARGS__)
+  #define assert(expr, ...) LIBASSERT_INVOKE(expr, "assert", assertion, LIBASSERT_NOP_ACTION, __VA_ARGS__)
  #endif
 #endif
